@@ -1,0 +1,4 @@
+- name: コンテナ起動
+  docker_compose:
+    project_src: /home/admin
+    state: present

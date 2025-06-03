@@ -1,0 +1,11 @@
+- name: ec2-setup #実行するタスク名
+  hosts: server #対象ホスト
+  become: yes #root権限で実行するかどうか
+  roles: #タスクを記述しているディレクトリ
+    - role: setup
+
+- name: docker-compose
+  hosts: api
+  become: no
+  roles:
+    - role: docker_compose
