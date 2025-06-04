@@ -4,8 +4,14 @@
   roles: #タスクを記述しているディレクトリ
     - role: setup
 
+- name: docker-setup #実行するタスク名
+  hosts: server #対象ホスト
+  become: yes #root権限で実行するかどうか
+  roles: #タスクを記述しているディレクトリ
+    - role: setup_docker
+
 - name: docker-compose
-  hosts: api
-  become: no
+  hosts: server
+  become: yes #root権限で実行するかどうか
   roles:
     - role: docker_compose

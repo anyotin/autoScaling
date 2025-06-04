@@ -1,4 +1,8 @@
+- name: Pull an nginx-image
+  community.docker.docker_image_pull:
+    name: nginx:latest
+
 - name: コンテナ起動
-  docker_compose:
+  community.docker.docker_compose_v2:
     project_src: /home/admin
     state: present
