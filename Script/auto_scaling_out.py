@@ -8,9 +8,9 @@ def scaling_out_process() -> None:
     # utility.run_instances_launch_template(launch_instance_num=int(args[1]))
 
     # 起動したインスタンス
-    launch_instances = utility.describe_instances('*')
+    launch_instances = utility.execute_describe_instances('*')
 
-    target_group = utility.describe_target_groups('')
+    target_group = utility.execute_describe_target_groups('')
     target_group_arn = target_group['TargetGroups'][0]['TargetGroupArn']
 
     for instance in launch_instances:
@@ -25,7 +25,7 @@ def scaling_out_process() -> None:
         asyncio.run(utility.async_run_initial_setting_current(public_ip))
 
         # 起動したインスタンスをターゲットグループへ追加
-        utility.elb_register_targets_current(target_group_arn, instance_id)
+        utility.execute_elb_register_targets_current(target_group_arn, instance_id)
 
         # ヘルスチェックを実施し、全て完了すればOKとみなす。
         if not utility.check_health_instance(instance_id):
@@ -38,6 +38,5 @@ if __name__ == "__main__":
         raise Exception('Error!')
 
     # scaling_out_process()
-
-
+    print(utility.execute_describe_instances())
 

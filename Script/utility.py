@@ -10,81 +10,61 @@ Instance_Health_Check_Timeout = 30
 
 
 # インスタンス情報確認
-def describe_instances(filter_name='*', instance_state_code: scaling_enum.StateCode = scaling_enum.StateCode.RUNNING) -> []:
+def execute_describe_instances(filter_name='*', instance_state_code: scaling_enum.StateCode = scaling_enum.StateCode.RUNNING) -> []:
     # AWS CLIコマンドを実行
-    describe_instances_result = subprocess.run(
-        ['aws', 'ec2', 'describe-instances', '--filters', f'Name=tag:Name,Values={filter_name}',
-         f'Name=instance-state-code,Values={instance_state_code}', '--output', 'json'],
-        capture_output=True,
-        text=True,
-        check=True
-    )
+    cli_cmd = ['aws', 'ec2', 'describe-instances', '--filters', f'Name=tag:Name,Values={filter_name}',
+               f'Name=instance-state-code,Values={instance_state_code}', '--output', 'json']
 
-    # 2番目のコマンド: jq処理
-    result = subprocess.run(
-        [
-            'jq',
-            '[.Reservations[].Instances[] | '
-            '{InstanceName: (.Tags[] | select(.Key=="Name").Value), InstanceId, PrivateIpAddress, PublicIpAddress}]'
-        ],
-        input=describe_instances_result.stdout,  # 前のコマンドの出力を入力として使用
-        capture_output=True,
-        text=True,
-        check=True
-    )
+    cli_query = ['--query', 'Reservations[0].Instances[].{'
+                                'InstanceId: InstanceId,'
+                                'InstanceName: Tags[0].Value,'
+                                'PublicIpAddress: PublicIpAddress,'
+                                'PrivateIpAddress: PrivateIpAddress}']
+
+    result = subprocess.run(cli_cmd + cli_query, capture_output=True, text=True)
     if result.returncode != 0:
         raise Exception(f"エラー: {result.stderr}")
 
     return json.loads(result.stdout)
 
 
-# ランチテンプレートの確認
-def describe_launch_templates() -> []:
-    cli_cmd = ['aws', 'ec2', 'describe-launch-templates']
-    run_result = subprocess.run(cli_cmd, capture_output=True, text=True)
-    if run_result.returncode != 0:
-        raise Exception(f"エラー: {run_result.stderr}")
+# 起動テンプレートId取得コマンド実行
+def execute_get_launch_template_id() -> str:
+    cli_cmd = ['aws', 'ec2', 'describe-launch-templates', '--launch-template-names', 'eggplant']
+    cli_query = ['--query', 'LaunchTemplates[0].LaunchTemplateId']
+    result = subprocess.run(cli_cmd + cli_query, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise Exception(f"エラー: {result.stderr}")
 
-    LaunchTemplateIds = []
-    run_result_json = json.loads(run_result.stdout)
+    return json.loads(result.stdout)
 
-    for template in run_result_json['LaunchTemplates']:
-        LaunchTemplateIds.append(template['LaunchTemplateId'])
+# インスタンス起動コマンド実行
+def execute_run_instances(launch_template_id: str, index: int):
+    cli_cmd = ['aws', 'ec2', 'run-instances',
+               '--launch-template', f'LaunchTemplateId={launch_template_id},Version=1',
+               '--tag-specifications', f"ResourceType=instance,Tags=[{{Key=Name,Value=eggplant_auto_scaling_{index + 1}}}]"]
 
-    return LaunchTemplateIds
-
-
-# 使用する起動テンプレートを取得
-def get_launch_templateId() -> str:
-    return describe_launch_templates()[0]
-
+    result = subprocess.run(cli_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise Exception('Error in run_instances_launch_template!')
 
 # 起動テンプレートでの起動
 def run_instances_launch_template(launch_instance_num: int = 1, version: int = 1):
-    describe_instances_result = describe_instances()
-
-    print(describe_instances_result)
+    describe_instances_result = execute_describe_instances()
 
     if len(describe_instances_result) + launch_instance_num > 4:
         raise Exception('Error in run_instances_launch_template!')
 
-    LaunchTemplateId = get_launch_templateId()
+    launch_template_id = execute_get_launch_template_id()
 
     for i in list(range(launch_instance_num)):
-        cli_cmd = ['aws', 'ec2', 'run-instances',
-                   '--launch-template', f'LaunchTemplateId={LaunchTemplateId},Version={version}',
-                   '--tag-specifications',
-                   f"ResourceType=instance,Tags=[{{Key=Name,Value=tnn_api_dev_auto_scaling_{i + 1}}}]"]
-
-        run_result = subprocess.run(cli_cmd, capture_output=True, text=True)
-        if run_result.returncode != 0:
-            raise Exception('Error in run_instances_launch_template!')
+        execute_run_instances(launch_template_id, i)
 
 
 # 複数インスタンスの初期設定
 async def async_run_initial_setting():
     # 複数のターゲットで並列実行
-    describe_instances_result = describe_instances('*tnn_api_dev_auto_scaling*')
+    describe_instances_result = execute_describe_instances('*tnn_api_dev_auto_scaling*')
 
     # 並列実行
     results = await asyncio.gather(*[
@@ -145,34 +125,34 @@ async def async_run_ansible_playbook(target_ip):
 
 
 # ターゲットグループ取得
-def describe_target_groups(target_group_name: str) -> []:
+def execute_describe_target_groups(target_group_name: str) -> []:
     # AWS CLIコマンドを実行
     cli_cmd = ['aws', 'elbv2', 'describe-target-groups', '--names', target_group_name, '--output', 'json']
-    run_result = subprocess.run(cli_cmd, capture_output=True, text=True)
-    if run_result.returncode != 0:
-        raise Exception(f"エラー: {run_result.stderr}")
+    result = subprocess.run(cli_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise Exception(f"エラー: {result.stderr}")
 
-    return json.loads(run_result.stdout)
+    return json.loads(result.stdout)
 
 
 # ターゲットグループへの追加
 def elb_register_targets() -> None:
-    target_group = describe_target_groups('*tnn-alb-tg*')
-    targetGroupArn = target_group['TargetGroups'][0]['TargetGroupArn']
+    target_group = execute_describe_target_groups('*tnn-alb-tg*')
+    target_group_arn = target_group['TargetGroups'][0]['TargetGroupArn']
 
-    describe_instances_result = describe_instances('*tnn_api_dev_auto_scaling*')
+    describe_instances_result = execute_describe_instances('*tnn_api_dev_auto_scaling*')
     targets = get_register_target_instance(describe_instances_result)
-    cli_cmd = ['aws', 'elbv2', 'register-targets', '--target-group-arn', targetGroupArn, '--targets', targets]
+    cli_cmd = ['aws', 'elbv2', 'register-targets', '--target-group-arn', target_group_arn, '--targets', targets]
     run_result = subprocess.run(cli_cmd, capture_output=True, text=True)
     if run_result.returncode != 0:
         raise Exception('Error in elb_register_targets!')
 
 
 # ターゲットグループへの追加
-def elb_register_targets_current(target_group_arn: str, instance_id: str) -> None:
+def execute_elb_register_targets_current(target_group_arn: str, instance_id: str) -> None:
     cli_cmd = ['aws', 'elbv2', 'register-targets', '--target-group-arn', target_group_arn, '--targets', [{'Id': instance_id}]]
-    run_result = subprocess.run(cli_cmd, capture_output=True, text=True)
-    if run_result.returncode != 0:
+    result = subprocess.run(cli_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
         raise Exception('Error in elb_register_targets!')
 
 
@@ -181,7 +161,7 @@ def get_register_target_instance(describe_instances_result: []) -> []:
 
 
 # インスタンスステータスの確認
-def describe_instance_status(target_instance_id: str) -> []:
+def execute_describe_instance_status(target_instance_id: str) -> []:
     cli_cmd = ['aws', 'ec2', 'describe-instance-status', '--instance-ids', target_instance_id]
     run_result = subprocess.run(cli_cmd, capture_output=True, text=True)
     if run_result.returncode != 0:
@@ -199,7 +179,7 @@ def is_running_instance(target_instance_id: str) -> bool:
 
     while time.time() - start_time < Instance_State_Check_Timeout:
         try:
-            target_instance_status = describe_instance_status(target_instance_id)
+            target_instance_status = execute_describe_instance_status(target_instance_id)
 
             if not target_instance_status['Reservations']:
                 print(f"インスタンス {target_instance_id} が見つかりません")
@@ -233,13 +213,13 @@ def is_running_instance(target_instance_id: str) -> bool:
 
 
 # ヘルスチェックの状態確認
-def describe_target_health(target_group_arn: str, instance_id: str) -> []:
+def execute_describe_target_health(target_group_arn: str, instance_id: str) -> []:
     cli_cmd = ['aws', 'elbv2', 'describe-target-health', '--target-group-arn', target_group_arn, '--targets', [{'Id': instance_id}]]
-    run_result = subprocess.run(cli_cmd, capture_output=True, text=True)
-    if run_result.returncode != 0:
+    result = subprocess.run(cli_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
         raise Exception('Error in describe_instance_status!')
 
-    return json.loads(run_result.stdout)
+    return json.loads(result.stdout)
 
 
 # ヘルスチェック
@@ -249,12 +229,12 @@ def check_health_instance(target_instance_id: str):
     start_time = time.time()
     check_interval = 3
 
-    target_group = describe_target_groups('tnn-lb-tg')
+    target_group = execute_describe_target_groups('tnn-lb-tg')
     target_group_arn = target_group['TargetGroups'][0]['TargetGroupArn']
 
     while time.time() - start_time < Instance_Health_Check_Timeout:
         try:
-            target_instance_health = describe_target_health(target_group_arn, target_instance_id)
+            target_instance_health = execute_describe_target_health(target_group_arn, target_instance_id)
 
             if not target_instance_health['TargetHealthDescriptions']:
                 print(f"インスタンス {target_instance_id} が見つかりません")
@@ -288,10 +268,10 @@ def check_health_instance(target_instance_id: str):
 
 # ターゲットグループから解除
 def elb_deregister_targets() -> None:
-    target_group = describe_target_groups('*tnn-alb-tg*')
+    target_group = execute_describe_target_groups('*tnn-alb-tg*')
     targetGroupArn = target_group['TargetGroups'][0]['TargetGroupArn']
 
-    describe_instances_result = describe_instances('*tnn_api_dev_auto_scaling*')
+    describe_instances_result = execute_describe_instances('*tnn_api_dev_auto_scaling*')
     targets = get_register_target_instance(describe_instances_result)
     cli_cmd = ['aws', 'elbv2', 'deregister-targets', '--target-group-arn', targetGroupArn, '--targets', targets]
     run_result = subprocess.run(cli_cmd, capture_output=True, text=True)
@@ -300,8 +280,8 @@ def elb_deregister_targets() -> None:
 
 
 # インスタンスをシャットダウン
-def shutdown_instances() -> None:
-    describe_instances_result = describe_instances('*tnn_api_dev_auto_scaling*')
+def execute_shutdown_instances() -> None:
+    describe_instances_result = execute_describe_instances('*tnn_api_dev_auto_scaling*')
 
     shutdown_target_instances = [instance['InstanceId'] for instance in describe_instances_result]
 
@@ -312,8 +292,8 @@ def shutdown_instances() -> None:
 
 
 # インスタンスを削除
-def terminate_instances() -> None:
-    describe_instances_result = describe_instances('*tnn_api_dev_auto_scaling*', scaling_enum.StateCode.STOPPED)
+def execute_terminate_instances() -> None:
+    describe_instances_result = execute_describe_instances('*tnn_api_dev_auto_scaling*', scaling_enum.StateCode.STOPPED)
 
     terminate_target_instances = [instance['InstanceId'] for instance in describe_instances_result]
 

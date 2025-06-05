@@ -7,10 +7,10 @@ def scaling_in_process() -> None:
     utility.elb_deregister_targets()
 
     # 起動したインスタンスをシャットダウン
-    utility.shutdown_instances()
+    utility.execute_shutdown_instances()
 
     # 起動したインスタンスを終了
-    utility.terminate_instances()
+    utility.execute_terminate_instances()
 
 
 if __name__ == "__main__":
