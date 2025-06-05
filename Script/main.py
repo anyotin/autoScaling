@@ -59,7 +59,6 @@ def get_launch_templateId() -> str:
 
 
 # 起動テンプレートでの起動
-# aws ec2 run-instances --launch-template LaunchTemplateId=lt-006a1fc4bbfe00e4b,Version=1
 def run_instances_launch_template(launch_instance_num: int = 1, version: int = 1):
     describe_instances_result = describe_instances()
 
@@ -83,7 +82,7 @@ def run_instances_launch_template(launch_instance_num: int = 1, version: int = 1
 
 async def async_run_initial_setting():
     # 複数のターゲットで並列実行
-    describe_instances_result = describe_instances('*tnn_api_dev_auto_scaling*')
+    describe_instances_result = describe_instances('')
 
     # 並列実行
     results = await asyncio.gather(*[
@@ -128,7 +127,6 @@ async def async_run_ansible_playbook(target_ip):
 
 
 # ターゲットグループへの追加
-# aws elbv2 register-targets --target-group-arn arn:aws:elasticloadbalancing:ap-northeast-1:560655421385:targetgroup/tnn-alb-tg/4067c44f872b24c5 --targets Id=i-06ecf695c8f9b04dd
 def elb_register_targets() -> None:
     # AWS CLIコマンドを実行
     cli_cmd = ['aws', 'elbv2', 'describe-target-groups', '--names', 'tnn-alb-tg', '--output', 'json']
@@ -158,7 +156,6 @@ def describe_instance_status():
 
 
 # ヘルスチェックの状態確認
-# aws elbv2 describe-target-health --target-group-arn=arn:aws:elasticloadbalancing:ap-northeast-1:560655421385:targetgroup/tnn-alb-tg/4067c44f872b24c5 --targets Id=i-06ecf695c8f9b04dd
 def describe_target_health():
     raise Exception
 
@@ -173,7 +170,7 @@ def elb_deregister_targets() -> None:
     # [print(f"{i:3d}: {line}") for i, line in enumerate(run_result.stdout.splitlines(), 1)]
     run_result_json = json.loads(run_result.stdout)
 
-    describe_instances_result = describe_instances('*tnn_api_dev_auto_scaling*')
+    describe_instances_result = describe_instances('')
     target_group_arn = run_result_json['TargetGroups'][0]['TargetGroupArn']
     targets = get_register_target_instance(describe_instances_result)
     cli_cmd = ['aws', 'elbv2', 'deregister-targets', '--target-group-arn', target_group_arn, '--targets', targets]
@@ -183,7 +180,7 @@ def elb_deregister_targets() -> None:
 
 
 def shutdown_instances() -> None:
-    describe_instances_result = describe_instances('*tnn_api_dev_auto_scaling*')
+    describe_instances_result = describe_instances('')
 
     shutdown_target_instances = [instance['InstanceId'] for instance in describe_instances_result]
 
@@ -194,7 +191,7 @@ def shutdown_instances() -> None:
 
 
 def terminate_instances() -> None:
-    describe_instances_result = describe_instances('*tnn_api_dev_auto_scaling*', 80)
+    describe_instances_result = describe_instances('', 80)
 
     terminate_target_instances = [instance['InstanceId'] for instance in describe_instances_result]
 
