@@ -1,19 +1,33 @@
-import sys
 import utility
+import asyncio
+import threading
+
+async def run_scaling_in_process() -> None:
+    # 終了対象のインスタンス取得
+    target_instances = utility.execute_describe_instances('*eggplant_auto_scaling_*', [16])
+    print(target_instances)
+
+    target_group = utility.execute_describe_target_groups('tnn-alb-tg')
+    target_group_arn = target_group['TargetGroups'][0]['TargetGroupArn']
+
+    for instance in target_instances:
+        scaling_out_task = threading.Thread(target=run_scaling_in_task, args=(instance, target_group_arn))
+        scaling_out_task.start()
+        scaling_out_task.join()
 
 
-def scaling_in_process() -> None:
+def run_scaling_in_task(instance: dict[str, str], target_group_arn: str):
     # 起動したインスタンスをターゲットグループから解除
-    utility.elb_deregister_targets()
+    utility.execute_elb_deregister_targets(target_group_arn, [instance])
 
-    # 起動したインスタンスをシャットダウン
-    utility.execute_shutdown_instances()
+    if not asyncio.run(utility.check_health_instance(target_group_arn, instance['InstanceId'], 'unused')):
+        return
 
     # 起動したインスタンスを終了
-    utility.execute_terminate_instances()
+    print("========== execute_terminate_instances 実行開始 ==========")
+    utility.execute_terminate_instances([instance])
+    print("========== execute_terminate_instances 実行完了 ==========")
 
 
 if __name__ == "__main__":
-    args = sys.argv
-    if len(args) != 2:
-        raise Exception('Error!')
+    asyncio.run(run_scaling_in_process())

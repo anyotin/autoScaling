@@ -3,108 +3,192 @@ import json
 import os
 import asyncio
 import time
-import scaling_enum
+import sys
 
+Instance_Launch_Timeout = 30
 Instance_State_Check_Timeout = 30
-Instance_Health_Check_Timeout = 30
-
+Instance_Health_Check_Timeout = 60
 
 # インスタンス情報確認
-def execute_describe_instances(filter_name='*', instance_state_code: scaling_enum.StateCode = scaling_enum.StateCode.RUNNING) -> []:
+# PENDING = 0, RUNNING = 16, SHUTTING_DOWN = 32, TERMINATED = 48, STOPPING = 64, STOPPED = 80
+def execute_describe_instances(filter_name: str, instance_state_codes: list[int]) -> list[dict[str, str]]:
     # AWS CLIコマンドを実行
-    cli_cmd = ['aws', 'ec2', 'describe-instances', '--filters', f'Name=tag:Name,Values={filter_name}',
-               f'Name=instance-state-code,Values={instance_state_code}', '--output', 'json']
+    cli_cmd = ['aws', 'ec2', 'describe-instances', '--filters', f'Name=tag:Name,Values={filter_name}', '--output', 'json']
 
-    cli_query = ['--query', 'Reservations[0].Instances[].{'
-                                'InstanceId: InstanceId,'
-                                'InstanceName: Tags[0].Value,'
-                                'PublicIpAddress: PublicIpAddress,'
-                                'PrivateIpAddress: PrivateIpAddress}']
+    cli_query = ['--query', 'Reservations[].Instances[].{'
+                            'InstanceId: InstanceId,'
+                            'InstanceName: Tags[?Key==`Name`].Value | [0],'
+                            'State: State.Code,'
+                            'PublicIpAddress: PublicIpAddress,'
+                            'PrivateIpAddress: PrivateIpAddress}']
 
     result = subprocess.run(cli_cmd + cli_query, capture_output=True, text=True)
     if result.returncode != 0:
+        print("execute_describe_instances コマンド実行エラー")
         raise Exception(f"エラー: {result.stderr}")
 
-    return json.loads(result.stdout)
+    result_filter = [instance for instance in json.loads(result.stdout) if int(instance.get('State')) in instance_state_codes]
+
+    return result_filter
 
 
 # 起動テンプレートId取得コマンド実行
 def execute_get_launch_template_id() -> str:
-    cli_cmd = ['aws', 'ec2', 'describe-launch-templates', '--launch-template-names', 'eggplant']
+    cli_cmd = ['aws', 'ec2', 'describe-launch-templates', '--filters', f'Name=launch-template-name,Values=*foobar*']
     cli_query = ['--query', 'LaunchTemplates[0].LaunchTemplateId']
+
     result = subprocess.run(cli_cmd + cli_query, capture_output=True, text=True)
     if result.returncode != 0:
+        print("execute_get_launch_template_id コマンド実行エラー")
         raise Exception(f"エラー: {result.stderr}")
 
     return json.loads(result.stdout)
 
+
 # インスタンス起動コマンド実行
-def execute_run_instances(launch_template_id: str, index: int):
+def execute_run_instances(launch_template_id: str, index: int) -> None:
     cli_cmd = ['aws', 'ec2', 'run-instances',
                '--launch-template', f'LaunchTemplateId={launch_template_id},Version=1',
-               '--tag-specifications', f"ResourceType=instance,Tags=[{{Key=Name,Value=eggplant_auto_scaling_{index + 1}}}]"]
+               '--tag-specifications', f"ResourceType=instance,Tags=[{{Key=Name,Value=eggplant_auto_scaling_{index}}}]"]
 
     result = subprocess.run(cli_cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise Exception('Error in run_instances_launch_template!')
+        print("execute_run_instances コマンド実行エラー")
+        raise Exception(f"エラー: {result.stderr}")
+
+
+# ターゲットグループ取得
+def execute_describe_target_groups(target_group_name: str) -> list[dict[str, str]]:
+    # AWS CLIコマンドを実行
+    cli_cmd = ['aws', 'elbv2', 'describe-target-groups', '--names', target_group_name, '--output', 'json']
+    cli_query = ['--query', 'LaunchTemplates[0].LaunchTemplateId']
+
+    result = subprocess.run(cli_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print("execute_describe_target_groups コマンド実行エラー")
+        raise Exception(f"エラー: {result.stderr}")
+
+    return json.loads(result.stdout)
+
+
+# ターゲットグループへの追加
+def execute_elb_register_targets_current(target_group_arn: str, instance_id: str) -> None:
+    cli_cmd = ['aws', 'elbv2', 'register-targets', '--target-group-arn', target_group_arn, '--targets', json.dumps([{'Id': instance_id}])]
+
+    result = subprocess.run(cli_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print("execute_elb_register_targets_current コマンド実行エラー")
+        raise Exception(f"エラー: {result.stderr}")
+
+
+# ヘルスチェックの状態確認
+def execute_describe_target_health(target_group_arn: str, instance_id: str) -> list[dict[str, str]]:
+    cli_cmd = ['aws', 'elbv2', 'describe-target-health', '--target-group-arn', target_group_arn, '--targets', json.dumps([{'Id': instance_id}])]
+
+    result = subprocess.run(cli_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print("execute_describe_target_health コマンド実行エラー")
+        raise Exception(f"エラー: {result.stderr}")
+
+    return json.loads(result.stdout)
+
+
+# インスタンスステータスの確認
+def execute_describe_instance_status(target_instance_id: str) -> list[dict[str, str]]:
+    cli_cmd = ['aws', 'ec2', 'describe-instance-status', '--filters', f'Name=launch-template-name,Values=*foobar*']
+
+    cli_cmd = ['aws', 'ec2', 'describe-instance-status', '--instance-ids', target_instance_id]
+
+    result = subprocess.run(cli_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print("execute_describe_instance_status コマンド実行エラー")
+        raise Exception(f"エラー: {result.stderr}")
+
+    return json.loads(result.stdout)
+
+
+# ターゲットグループから解除
+def execute_elb_deregister_targets(target_group_arn: str, target_instances: list[dict[str, str]]) -> None:
+    targets = json.dumps([{'Id': instance['InstanceId']} for instance in target_instances])
+
+    cli_cmd = ['aws', 'elbv2', 'deregister-targets', '--target-group-arn', target_group_arn, '--targets', targets]
+
+    result = subprocess.run(cli_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print("execute_elb_deregister_targets コマンド実行エラー")
+        raise Exception(f"エラー: {result.stderr}")
+
+
+# インスタンスをシャットダウン
+def execute_shutdown_instances(target_instances: list[dict[str, str]]) -> None:
+    shutdown_target_instances = [instance['InstanceId'] for instance in target_instances]
+
+    cli_cmd = ['aws', 'ec2', 'stop-instances', '--instance-ids'] + shutdown_target_instances
+
+    result = subprocess.run(cli_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print("execute_shutdown_instances コマンド実行エラー")
+        raise Exception(f"エラー: {result.stderr}")
+
+
+# インスタンスを削除
+def execute_terminate_instances(target_instances: list[dict[str, str]]) -> None:
+    terminate_target_instances = [instance['InstanceId'] for instance in target_instances]
+
+    cli_cmd = ['aws', 'ec2', 'terminate-instances', '--instance-ids'] + terminate_target_instances
+
+    result = subprocess.run(cli_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print("execute_terminate_instances コマンド実行エラー")
+        raise Exception(f"エラー: {result.stderr}")
+
+
+# 起動したインスタンスの取得待機
+async def getting_instance_async(target_instance_name: str) -> list[dict[str, str]]:
+    print("========== getting_instance_async 実行開始 ==========")
+
+    start_time = time.time()
+    check_interval = 1
+
+    result = []
+
+    while time.time() - start_time < Instance_Launch_Timeout:
+        time.sleep(check_interval)
+        try:
+            result = execute_describe_instances(target_instance_name, [0, 16])
+            if len(result) != 0:
+                break
+
+        except Exception as e:
+            print(f"予期しないエラー: {e}")
+            continue
+
+    if len(result) == 0:
+        print(f"✗ タイムアウト ({Instance_State_Check_Timeout}秒) に達しました")
+        raise Exception("exist_instance_async タイムアウトエラー")
+
+    print("========== getting_instance_async 実行終了 ==========")
+
+    return result
+
 
 # 起動テンプレートでの起動
-def run_instances_launch_template(launch_instance_num: int = 1, version: int = 1):
-    describe_instances_result = execute_describe_instances()
-
-    if len(describe_instances_result) + launch_instance_num > 4:
-        raise Exception('Error in run_instances_launch_template!')
-
+def run_instances_launch_template(index: int):
     launch_template_id = execute_get_launch_template_id()
 
-    for i in list(range(launch_instance_num)):
-        execute_run_instances(launch_template_id, i)
-
-
-# 複数インスタンスの初期設定
-async def async_run_initial_setting():
-    # 複数のターゲットで並列実行
-    describe_instances_result = execute_describe_instances('*tnn_api_dev_auto_scaling*')
-
-    # 並列実行
-    results = await asyncio.gather(*[
-        async_run_ansible_playbook(instance['PublicIpAddress'])
-        for instance in describe_instances_result
-    ])
-
-    # 結果を処理
-    for result in results:
-        if result['return_code'] == 0:
-            print(f"✓ {result['target_ip']}: Success")
-            [print(f"{i:3d}: {line}") for i, line in enumerate(result['stdout'].splitlines(), 1)]
-        else:
-            print(f"✗ {result['target_ip']}: Failed")
-            print(f"Error: {result['stderr']}")
-            raise Exception('Error in async_run_initial_setting!')
-
-
-# インスタンスの初期設定
-async def async_run_initial_setting_current(public_ip: str) -> None:
-    result = asyncio.run(async_run_ansible_playbook(public_ip))
-
-    # 結果を処理
-    if result['return_code'] == 0:
-        print(f"✓ {result['target_ip']}: Success")
-        [print(f"{i:3d}: {line}") for i, line in enumerate(result['stdout'].splitlines(), 1)]
-    else:
-        print(f"✗ {result['target_ip']}: Failed")
-        print(f"Error: {result['stderr']}")
-        raise Exception('Error in async_run_initial_setting!')
+    execute_run_instances(launch_template_id, index)
 
 
 # 各ホストに対してAnsible実行
-async def async_run_ansible_playbook(target_ip):
-    target_host = f"{os.environ['HOME']}/AWS/AutoScalingVerification/Ansible/hosts.yml"
+async def async_run_ansible_playbook(target_ip) -> None:
+    print("========== async_run_ansible_playbook 実行開始 ==========")
+
     target_set_up = f"{os.environ['HOME']}/AWS/AutoScalingVerification/Ansible/setup.yml"
+    target_host = f"{os.environ['HOME']}/AWS/AutoScalingVerification/Ansible/hosts.yml"
 
     """単一のAnsibleプレイブックを非同期実行"""
     ansible_run_cmd = [
-        'ansible-playbook', target_set_up, '-i', target_host, '-e', f'target_ip={target_ip}'
+        'ansible-playbook', target_set_up, '-i', target_host, '-e', f'target_ip={target_ip}', '--timeout', '30'
     ]
 
     # asyncio.subprocessを使用
@@ -114,131 +198,97 @@ async def async_run_ansible_playbook(target_ip):
         stderr=asyncio.subprocess.PIPE,
     )
 
+    while True:
+        if process.stdout.at_eof() and process.stderr.at_eof():
+            break
+
+        stdout = (await process.stdout.readline()).decode()
+        if stdout:
+            print(f'[stdout] {stdout}', end='', flush=True)
+        stderr = (await process.stderr.readline()).decode()
+        if stderr:
+            print(f'[sdterr] {stderr}', end='', flush=True, file=sys.stderr)
+
+        await asyncio.sleep(0.1)
+
     stdout, stderr = await process.communicate()
 
-    return {
-        'return_code': process.returncode,
-        'stdout': stdout,
-        'stderr': stderr,
-        'target_ip': target_ip
-    }
+    if process.returncode != 0:
+        print(f"✗ {target_ip}: Failed")
+        print(f"Error: {stderr}")
+        raise Exception(f"エラー: {stderr.decode()}")
 
-
-# ターゲットグループ取得
-def execute_describe_target_groups(target_group_name: str) -> []:
-    # AWS CLIコマンドを実行
-    cli_cmd = ['aws', 'elbv2', 'describe-target-groups', '--names', target_group_name, '--output', 'json']
-    result = subprocess.run(cli_cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise Exception(f"エラー: {result.stderr}")
-
-    return json.loads(result.stdout)
-
-
-# ターゲットグループへの追加
-def elb_register_targets() -> None:
-    target_group = execute_describe_target_groups('*tnn-alb-tg*')
-    target_group_arn = target_group['TargetGroups'][0]['TargetGroupArn']
-
-    describe_instances_result = execute_describe_instances('*tnn_api_dev_auto_scaling*')
-    targets = get_register_target_instance(describe_instances_result)
-    cli_cmd = ['aws', 'elbv2', 'register-targets', '--target-group-arn', target_group_arn, '--targets', targets]
-    run_result = subprocess.run(cli_cmd, capture_output=True, text=True)
-    if run_result.returncode != 0:
-        raise Exception('Error in elb_register_targets!')
-
-
-# ターゲットグループへの追加
-def execute_elb_register_targets_current(target_group_arn: str, instance_id: str) -> None:
-    cli_cmd = ['aws', 'elbv2', 'register-targets', '--target-group-arn', target_group_arn, '--targets', [{'Id': instance_id}]]
-    result = subprocess.run(cli_cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise Exception('Error in elb_register_targets!')
-
-
-def get_register_target_instance(describe_instances_result: []) -> []:
-    return json.dumps([{'Id': instance['InstanceId']} for instance in describe_instances_result])
-
-
-# インスタンスステータスの確認
-def execute_describe_instance_status(target_instance_id: str) -> []:
-    cli_cmd = ['aws', 'ec2', 'describe-instance-status', '--instance-ids', target_instance_id]
-    run_result = subprocess.run(cli_cmd, capture_output=True, text=True)
-    if run_result.returncode != 0:
-        raise Exception('Error in describe_instance_status!')
-
-    return json.loads(run_result.stdout)
+    # 結果を処理
+    print(f"✓ {target_ip}: Success")
+    [print(f"{i:3d}: {line}") for i, line in enumerate(stdout.splitlines(), 1)]
+    print("========== async_run_ansible_playbook 実行終了 ==========\n")
 
 
 # インスタンスの起動状態チェック
-def is_running_instance(target_instance_id: str) -> bool:
+async def check_instance_status_async(target_instance_id: str, state: str) -> bool:
+    print("========== is_running_instance_async 実行開始 ==========")
     print(f"インスタンス {target_instance_id} のステータスチェックを開始します...")
 
     start_time = time.time()
-    check_interval = 3
+    check_interval = 5
+
+    result = False
 
     while time.time() - start_time < Instance_State_Check_Timeout:
+        time.sleep(check_interval)
+
         try:
             target_instance_status = execute_describe_instance_status(target_instance_id)
 
-            if not target_instance_status['Reservations']:
+            if not target_instance_status['InstanceStatuses']:
                 print(f"インスタンス {target_instance_id} が見つかりません")
-                return False
+                continue
 
-            instance = target_instance_status['Reservations'][0]['Instances'][0]
-            state = instance['State']['Name']
+            instance_state = target_instance_status['InstanceStatuses'][0]['InstanceState']['Name']
 
             elapsed_time = int(time.time() - start_time)
-            print(f"[{elapsed_time}s] インスタンス状態: {state}")
+            print(f"[{elapsed_time}s] インスタンス状態: {instance_state}")
 
-            # インスタンスが正常状態（running）かチェック
-            if state == 'running':
-                print(f"✓ インスタンス {target_instance_id} は正常に稼働しています")
-                return True
-            elif state in ['stopped', 'stopping', 'terminated', 'terminating']:
-                print(f"✗ インスタンス {target_instance_id} は停止状態です: {state}")
-                return False
+            # インスタンス状態チェック
+            if instance_state == state:
+                print(f"✓ インスタンス {target_instance_id} は{state}状態です。")
+                result = True
+                break
+            else:
+                print(f"✗ インスタンス {target_instance_id} は {instance_state} 状態です。")
+                print("意図した状態ではありません。")
 
-        except subprocess.TimeoutExpired:
-            print("AWS CLIコマンドがタイムアウトしました")
-        except json.JSONDecodeError as e:
-            print(f"JSONパースエラー: {e}")
         except Exception as e:
             print(f"予期しないエラー: {e}")
+            continue
 
-        time.sleep(check_interval)
+    if result:
+        return result
 
     print(f"✗ タイムアウト ({Instance_State_Check_Timeout}秒) に達しました")
+    print("========== is_running_instance_async 実行終了 ==========")
+
     return False
 
 
-# ヘルスチェックの状態確認
-def execute_describe_target_health(target_group_arn: str, instance_id: str) -> []:
-    cli_cmd = ['aws', 'elbv2', 'describe-target-health', '--target-group-arn', target_group_arn, '--targets', [{'Id': instance_id}]]
-    result = subprocess.run(cli_cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise Exception('Error in describe_instance_status!')
-
-    return json.loads(result.stdout)
-
-
 # ヘルスチェック
-def check_health_instance(target_instance_id: str):
+async def check_health_instance(target_group_arn: str, target_instance_id: str, target_status: str = 'healthy') -> bool:
+    print("========== check_health_instance 実行開始 ==========")
     print(f"インスタンス {target_instance_id} のヘルスチェックチェックを開始します...")
 
     start_time = time.time()
-    check_interval = 3
+    check_interval = 2
 
-    target_group = execute_describe_target_groups('tnn-lb-tg')
-    target_group_arn = target_group['TargetGroups'][0]['TargetGroupArn']
+    result = False
 
     while time.time() - start_time < Instance_Health_Check_Timeout:
+        time.sleep(check_interval)
         try:
             target_instance_health = execute_describe_target_health(target_group_arn, target_instance_id)
 
             if not target_instance_health['TargetHealthDescriptions']:
                 print(f"インスタンス {target_instance_id} が見つかりません")
-                return False
+                continue
 
             state = target_instance_health['TargetHealthDescriptions'][0]['TargetHealth']['State']
 
@@ -246,60 +296,21 @@ def check_health_instance(target_instance_id: str):
             print(f"[{elapsed_time}s] インスタンス状態: {state}")
 
             # インスタンスが正常状態（running）かチェック
-            if state == 'healthy':
+            if state == target_status:
                 print(f"✓ インスタンス {target_instance_id} はヘルスチェックが完了しました。")
-                return True
+                result = True
+                break
             else:
                 print(f"✗ インスタンス {target_instance_id} ヘルスチェックが完了していません。: {state}")
-                return False
 
-        except subprocess.TimeoutExpired:
-            print("AWS CLIコマンドがタイムアウトしました")
-        except json.JSONDecodeError as e:
-            print(f"JSONパースエラー: {e}")
         except Exception as e:
             print(f"予期しないエラー: {e}")
+            continue
 
-        time.sleep(check_interval)
+    if result:
+        return result
 
     print(f"✗ タイムアウト ({Instance_Health_Check_Timeout}秒) に達しました")
-    return False
+    print("========== check_health_instance 実行終了 ==========")
 
-
-# ターゲットグループから解除
-def elb_deregister_targets() -> None:
-    target_group = execute_describe_target_groups('*tnn-alb-tg*')
-    targetGroupArn = target_group['TargetGroups'][0]['TargetGroupArn']
-
-    describe_instances_result = execute_describe_instances('*tnn_api_dev_auto_scaling*')
-    targets = get_register_target_instance(describe_instances_result)
-    cli_cmd = ['aws', 'elbv2', 'deregister-targets', '--target-group-arn', targetGroupArn, '--targets', targets]
-    run_result = subprocess.run(cli_cmd, capture_output=True, text=True)
-    if run_result.returncode != 0:
-        raise Exception('Error in elb_deregister_targets!')
-
-
-# インスタンスをシャットダウン
-def execute_shutdown_instances() -> None:
-    describe_instances_result = execute_describe_instances('*tnn_api_dev_auto_scaling*')
-
-    shutdown_target_instances = [instance['InstanceId'] for instance in describe_instances_result]
-
-    cli_cmd = ['aws', 'ec2', 'stop-instances', '--instance-ids'] + shutdown_target_instances
-    run_result = subprocess.run(cli_cmd, capture_output=True, text=True)
-    if run_result.returncode != 0:
-        raise Exception('Error in shutdown_instances!')
-
-
-# インスタンスを削除
-def execute_terminate_instances() -> None:
-    describe_instances_result = execute_describe_instances('*tnn_api_dev_auto_scaling*', scaling_enum.StateCode.STOPPED)
-
-    terminate_target_instances = [instance['InstanceId'] for instance in describe_instances_result]
-
-    print(terminate_target_instances)
-
-    cli_cmd = ['aws', 'ec2', 'terminate-instances', '--instance-ids'] + terminate_target_instances
-    run_result = subprocess.run(cli_cmd, capture_output=True, text=True)
-    if run_result.returncode != 0:
-        raise Exception('Error in terminate_instances!')
+    return result
