@@ -91,7 +91,7 @@ resource "aws_vpc_security_group_ingress_rule" "eggplant-allow-ssh-00" {
   from_port   = 22
   to_port     = 22
   ip_protocol = "tcp"
-  cidr_ipv4   = "219.120.96.216/29"
+  cidr_ipv4   = var.company_ip1
   security_group_id = aws_security_group.eggplant-ssh.id
 
   tags = {
@@ -103,11 +103,23 @@ resource "aws_vpc_security_group_ingress_rule" "eggplant-allow-ssh-01" {
   from_port   = 22
   to_port     = 22
   ip_protocol = "tcp"
-  cidr_ipv4   = "218.42.203.175/32"
+  cidr_ipv4   = var.company_ip2
   security_group_id = aws_security_group.eggplant-ssh.id
 
   tags = {
     Name = "eggplant_allow_ssh_01"
+  }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "eggplant-allow-ssh-local-01" {
+  from_port   = 22
+  to_port     = 22
+  ip_protocol = "tcp"
+  cidr_ipv4   = var.local_ip
+  security_group_id = aws_security_group.eggplant-ssh.id
+
+  tags = {
+    Name = "eggplant_allow_ssh_local_01"
   }
 }
 

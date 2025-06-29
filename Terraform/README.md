@@ -25,3 +25,6 @@ provider "aws" {
   }
 }
 ```
+
+<参考記事>
+[・](https://qiita.com/hm-om/items/96bfe67ac60ca7707215)
